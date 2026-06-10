@@ -1,3 +1,26 @@
 spring:
   application:
     name: mysql-redis-benchmark
+  datasource:
+    url: jdbc:mysql://localhost:3306/benchmark_db?rewriteBatchedStatements=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: benchmark_user
+    password: benchmark_pass
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          batch_size: 1000
+        order_inserts: true
+        order_updates: true
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  port: 8080

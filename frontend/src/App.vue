@@ -2,13 +2,30 @@
   <div class="dashboard">
     <header class="dashboard-header">
       <div class="title-container">
-        <span class="badge">Benchmark System</span>
-        <h1>MySQL vs Redis 성능 비교 데모</h1>
-        <p class="subtitle">다양한 데이터 액세스 계층과 작업 방식에 따른 데이터베이스 속도와 처리량 분석</p>
+        <span class="badge">Advanced Database Benchmark</span>
+        <h1>MySQL vs Redis 성능 비교 대시보드</h1>
+        <p class="subtitle">다양한 데이터 액세스 계층과 대용량 조회 패턴에 따른 속도 비교 분석기</p>
+      </div>
+      
+      <!-- Tab Selection -->
+      <div class="nav-tabs">
+        <button 
+          :class="['nav-tab-btn', { active: activeTab === 'basic' }]"
+          @click="activeTab = 'basic'"
+        >
+          ⏱️ 기본 읽기 / 쓰기 벤치마크
+        </button>
+        <button 
+          :class="['nav-tab-btn', { active: activeTab === 'ranking' }]"
+          @click="activeTab = 'ranking'"
+        >
+          🏆 대용량 랭킹 조회 (Deep Offset) 벤치마크
+        </button>
       </div>
     </header>
 
-    <main class="dashboard-grid">
+    <!-- TAB 1: Basic Read/Write Benchmark -->
+    <main v-if="activeTab === 'basic'" class="dashboard-grid">
       <!-- 1. Configuration Panel -->
       <section class="card config-card">
         <h2>벤치마크 구성</h2>
@@ -133,8 +150,8 @@
       </div>
     </main>
 
-    <!-- 3. Detailed Stats Table -->
-    <section v-if="!isLoading && results && results.length > 0" class="card table-card">
+    <!-- TAB 1 Bottom Table -->
+    <section v-if="activeTab === 'basic' && !isLoading && results && results.length > 0" class="card table-card">
       <div class="table-header">
         <h2>상세 성능 지표</h2>
         <span class="info-tag">Count: {{ resultsCount }} ops | Payload: {{ resultsPayload }} bytes</span>
@@ -170,13 +187,222 @@
         </table>
       </div>
     </section>
+
+    <!-- TAB 2: Ranking (Deep Offset) Benchmark -->
+    <main v-if="activeTab === 'ranking'" class="dashboard-grid">
+      <!-- 1. Ranking Config Panel -->
+      <section class="card config-card">
+        <h2>대용량 데이터 구성</h2>
+        
+        <div class="form-group">
+          <label>랭킹 데이터 건수: <span class="value-highlight">{{ rankingConfig.dbCount.toLocaleString() }} 건</span></label>
+          <input 
+            type="range" 
+            v-model.number="rankingConfig.dbCount" 
+            min="10000" 
+            max="1000000" 
+            step="10000"
+            class="slider"
+          />
+          <div class="slider-labels">
+            <span>1만</span>
+            <span>50만</span>
+            <span>100만 (최대)</span>
+          </div>
+          
+          <button 
+            @click="initializeRankingData" 
+            :disabled="isRankingLoading || isInitializing" 
+            class="btn-secondary"
+          >
+            <span v-if="isInitializing" class="spinner-small"></span>
+            <span>{{ isInitializing ? '벌크 생성 및 데이터 저장 중...' : '데이터 새로 빌드하기 (MySQL & Redis)' }}</span>
+          </button>
+        </div>
+
+        <h2 style="margin-top: 10px;">랭킹 조회 설정</h2>
+
+        <div class="form-group">
+          <label>오프셋 (Offset): <span class="value-highlight">{{ rankingConfig.offset.toLocaleString() }} 위</span></label>
+          <input 
+            type="number" 
+            v-model.number="rankingConfig.offset" 
+            class="num-input"
+            min="0"
+            :max="rankingConfig.dbCount - rankingConfig.limit"
+          />
+          <input 
+            type="range" 
+            v-model.number="rankingConfig.offset" 
+            min="0" 
+            :max="rankingConfig.dbCount - rankingConfig.limit"
+            step="1000"
+            class="slider"
+          />
+          <div class="slider-labels">
+            <span>1위</span>
+            <span>{{ (rankingConfig.dbCount / 2).toLocaleString() }}위</span>
+            <span>{{ (rankingConfig.dbCount - rankingConfig.limit).toLocaleString() }}위</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>조회 건수 (Limit): <span class="value-highlight">{{ rankingConfig.limit }} 건</span></label>
+          <input 
+            type="range" 
+            v-model.number="rankingConfig.limit" 
+            min="1" 
+            max="100" 
+            step="1"
+            class="slider"
+          />
+          <div class="slider-labels">
+            <span>1</span>
+            <span>50</span>
+            <span>100</span>
+          </div>
+        </div>
+
+        <div class="button-row">
+          <button 
+            @click="runRankingQuery" 
+            :disabled="isRankingLoading || isInitializing" 
+            class="btn-primary"
+            style="flex: 1;"
+          >
+            <span v-if="isRankingLoading && !isCurveLoading" class="spinner-small"></span>
+            <span>단일 조회 실행</span>
+          </button>
+          
+          <button 
+            @click="runRankingCurve" 
+            :disabled="isRankingLoading || isInitializing" 
+            class="btn-accent"
+            title="오프셋 크기를 0부터 대용량까지 순차 증가시켜 지연 지표 분석"
+          >
+            <span v-if="isCurveLoading" class="spinner-small"></span>
+            <span>곡선 분석 실행</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 2. Ranking Results & Charts -->
+      <div class="results-visual-container">
+        <!-- Error Alert -->
+        <div v-if="rankingError" class="error-alert">
+          <p>{{ rankingError }}</p>
+        </div>
+
+        <!-- Initial/Loading state for ranking -->
+        <div v-if="isInitializing" class="loading-state card">
+          <div class="spinner-large"></div>
+          <h3>대용량 랭킹 데이터 생성 중</h3>
+          <p>MySQL 및 Redis에 {{ rankingConfig.dbCount.toLocaleString() }} 건의 무작위 점수 데이터를 벌크 인서트 및 ZSET 적재 중입니다. 잠시만 기다려 주세요...</p>
+        </div>
+
+        <div v-else-if="isRankingLoading && !isInitializing && !isCurveLoading" class="loading-state card">
+          <div class="spinner-large"></div>
+          <h3>조회 시간 측정 중...</h3>
+          <p>오프셋 {{ rankingConfig.offset.toLocaleString() }} 기준 랭킹을 MySQL Index Scan 정렬과 Redis Skip List를 통해 쿼리하고 있습니다.</p>
+        </div>
+
+        <div v-else-if="isCurveLoading" class="loading-state card">
+          <div class="spinner-large"></div>
+          <h3>오프셋-지연 곡선 연산 중...</h3>
+          <p>오프셋 크기별(0 ~ {{ (rankingConfig.dbCount - rankingConfig.limit).toLocaleString() }}위) 지연 시간 추이를 수집하고 있습니다. 그래프가 곧 로드됩니다...</p>
+        </div>
+
+        <div v-else-if="!rankingResult && curvePoints.length === 0" class="empty-state card">
+          <div class="empty-icon">🏆</div>
+          <h3>랭킹 벤치마크 준비 완료</h3>
+          <p>1. 먼저 '데이터 새로 빌드하기'를 통해 MySQL과 Redis에 대량 데이터를 생성하세요.<br>
+          2. '단일 조회 실행' 또는 '곡선 분석 실행'을 통해 데이터 구조에 따른 오프셋 한계를 체험하세요.</p>
+        </div>
+
+        <!-- Visualization panel -->
+        <div v-if="!isRankingLoading && !isInitializing && (rankingResult || curvePoints.length > 0)" class="visualization-grid">
+          <!-- Line Chart or Bar Chart -->
+          <div class="chart-wrapper-card">
+            <RankingChartComponent 
+              :chart-type="showCurveChart ? 'line' : 'bar'"
+              :single-data="rankingResult ? { mysqlTimeMs: rankingResult.mysqlTimeMs, redisTimeMs: rankingResult.redisTimeMs } : { mysqlTimeMs: 0, redisTimeMs: 0 }"
+              :curve-points="curvePoints"
+            />
+          </div>
+
+          <!-- Technical Explanation & Insights -->
+          <section class="card ranking-insights-card">
+            <h2>원리 분석</h2>
+            <div class="ranking-tech-details">
+              <div class="tech-item mysql">
+                <h4>🗄️ MySQL (B-Tree Index Scan)</h4>
+                <p>정렬 인덱스를 사용하더라도 오프셋(Offset)이 커지면 해당 행을 버리기 위해 <strong>앞선 노드들을 차례대로 모두 읽어야만(Scan)</strong> 합니다.</p>
+                <div v-if="rankingResult" class="tech-latency">지연: <span class="ms-red">{{ rankingResult.mysqlTimeMs.toFixed(3) }} ms</span></div>
+              </div>
+
+              <div class="tech-item redis">
+                <h4>⚡ Redis ZSET (Skip List)</h4>
+                <p>내부적으로 **Skip List(스킵 리스트)**를 사용하여 다단계 링크로 특정 순위로 빠르게 점프하므로 <strong>오프셋 깊이와 무관하게 고속 검색</strong>이 유지됩니다.</p>
+                <div v-if="rankingResult" class="tech-latency">지연: <span class="ms-green">{{ rankingResult.redisTimeMs.toFixed(3) }} ms</span></div>
+              </div>
+
+              <div v-if="rankingResult && rankingResult.mysqlTimeMs > 0 && rankingResult.redisTimeMs > 0" class="performance-gap">
+                결과: Redis가 MySQL보다 <span class="gap-highlight">{{ (rankingResult.mysqlTimeMs / rankingResult.redisTimeMs).toFixed(1) }}배</span> 더 빠릅니다.
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <!-- TAB 2 Bottom Rankings Comparison List -->
+    <section v-if="activeTab === 'ranking' && !isRankingLoading && !isInitializing && rankingResult" class="card ranking-list-card">
+      <div class="table-header">
+        <h2>실제 데이터 반환 비교 (동일성 검증)</h2>
+        <span class="info-tag">Offset: {{ rankingResult.offset.toLocaleString() }}위 | Limit: {{ rankingResult.limit }}건</span>
+      </div>
+      
+      <p class="description">양쪽 데이터베이스에서 반환한 상위 데이터와 순위, 점수가 완전히 동일한지 확인해 보세요.</p>
+      
+      <div class="ranking-columns">
+        <!-- MySQL columns -->
+        <div class="ranking-column">
+          <h3 class="col-title red">MySQL 조회 결과 (Limit: {{ rankingResult.limit }})</h3>
+          <div class="rank-rows">
+            <div v-for="rec in rankingResult.mysqlResults" :key="'mysql-'+rec.rank" class="rank-row">
+              <span class="rank-num red-bg">{{ rec.rank }}위</span>
+              <span class="rank-user">{{ rec.userId }}</span>
+              <span class="rank-score">{{ rec.score.toLocaleString() }}점</span>
+            </div>
+            <div v-if="rankingResult.mysqlResults.length === 0" class="no-data">조회 결과가 없습니다.</div>
+          </div>
+        </div>
+
+        <!-- Redis columns -->
+        <div class="ranking-column">
+          <h3 class="col-title green">Redis 조회 결과 (Limit: {{ rankingResult.limit }})</h3>
+          <div class="rank-rows">
+            <div v-for="rec in rankingResult.redisResults" :key="'redis-'+rec.rank" class="rank-row">
+              <span class="rank-num green-bg">{{ rec.rank }}위</span>
+              <span class="rank-user">{{ rec.userId }}</span>
+              <span class="rank-score">{{ rec.score.toLocaleString() }}점</span>
+            </div>
+            <div v-if="rankingResult.redisResults.length === 0" class="no-data">조회 결과가 없습니다.</div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed } from 'vue';
 import ChartComponent from './components/ChartComponent.vue';
+import RankingChartComponent from './components/RankingChartComponent.vue';
 
+const activeTab = ref('basic'); // 'basic' or 'ranking'
+
+// ================= TAB 1: BASIC BENCHMARK CODE =================
 const config = reactive({
   count: 1000,
   payloadSize: 100,
@@ -251,8 +477,6 @@ const startBenchmark = async () => {
     }
 
     const data = await response.json();
-    
-    // Sort results to keep a nice logical order in the table
     const targetOrder = ['MYSQL_JPA', 'MYSQL_JDBC', 'REDIS', 'REDIS_PIPELINE'];
     const opOrder = ['WRITE_SINGLE', 'WRITE_BATCH', 'READ_SINGLE', 'READ_BATCH'];
     
@@ -266,7 +490,6 @@ const startBenchmark = async () => {
     resultsCount.value = data.count;
     resultsPayload.value = data.payloadSize;
   } catch (error) {
-    console.error('Benchmark error:', error);
     errorMessage.value = `벤치마크 수행 중 오류가 발생했습니다: ${error.message}`;
   } finally {
     isLoading.value = false;
@@ -275,10 +498,8 @@ const startBenchmark = async () => {
 
 const calculatedInsights = computed(() => {
   if (!results.value || results.value.length === 0) return [];
-  
   const list = [];
   
-  // 1. 단건 쓰기 비교
   const writeSingle = results.value.filter(r => r.operation === 'WRITE_SINGLE' && r.opsPerSec > 0);
   if (writeSingle.length > 1) {
     writeSingle.sort((a, b) => b.opsPerSec - a.opsPerSec);
@@ -291,7 +512,6 @@ const calculatedInsights = computed(() => {
     });
   }
 
-  // 2. MySQL JPA vs JDBC 배치 쓰기 비교
   const mysqlJpaBatchWrite = results.value.find(r => r.target === 'MYSQL_JPA' && r.operation === 'WRITE_BATCH');
   const mysqlJdbcBatchWrite = results.value.find(r => r.target === 'MYSQL_JDBC' && r.operation === 'WRITE_BATCH');
   if (mysqlJpaBatchWrite && mysqlJdbcBatchWrite && mysqlJpaBatchWrite.opsPerSec > 0 && mysqlJdbcBatchWrite.opsPerSec > 0) {
@@ -304,7 +524,6 @@ const calculatedInsights = computed(() => {
     }
   }
 
-  // 3. Redis Single vs Pipeline 읽기 비교
   const redisSingleRead = results.value.find(r => r.target === 'REDIS' && r.operation === 'READ_SINGLE');
   const redisPipelineRead = results.value.find(r => r.target === 'REDIS_PIPELINE' && r.operation === 'READ_SINGLE');
   if (redisSingleRead && redisPipelineRead && redisSingleRead.opsPerSec > 0 && redisPipelineRead.opsPerSec > 0) {
@@ -317,7 +536,6 @@ const calculatedInsights = computed(() => {
     }
   }
 
-  // 4. Redis Pipeline vs MySQL JDBC 배치 쓰기 비교
   const redisPipeBatchWrite = results.value.find(r => r.target === 'REDIS_PIPELINE' && r.operation === 'WRITE_BATCH');
   const mysqlJdbcBatchWrite2 = results.value.find(r => r.target === 'MYSQL_JDBC' && r.operation === 'WRITE_BATCH');
   if (redisPipeBatchWrite && mysqlJdbcBatchWrite2 && redisPipeBatchWrite.opsPerSec > 0 && mysqlJdbcBatchWrite2.opsPerSec > 0) {
@@ -330,6 +548,95 @@ const calculatedInsights = computed(() => {
 
   return list;
 });
+
+// ================= TAB 2: RANKING BENCHMARK CODE =================
+const rankingConfig = reactive({
+  dbCount: 100000,
+  offset: 90000,
+  limit: 10
+});
+
+const isRankingLoading = ref(false);
+const isInitializing = ref(false);
+const isCurveLoading = ref(false);
+const showCurveChart = ref(false);
+const rankingResult = ref(null);
+const curvePoints = ref([]);
+const rankingError = ref('');
+
+const initializeRankingData = async () => {
+  isInitializing.value = true;
+  rankingError.value = '';
+  rankingResult.value = null;
+  curvePoints.value = [];
+  
+  try {
+    const response = await fetch('/api/ranking/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: rankingConfig.dbCount })
+    });
+    
+    if (!response.ok) throw new Error('데이터 구축 도중 서버 에러 발생');
+    const data = await response.json();
+    alert(data.message);
+  } catch (err) {
+    rankingError.value = `데이터 초기화 실패: ${err.message}`;
+  } finally {
+    isInitializing.value = false;
+  }
+};
+
+const runRankingQuery = async () => {
+  isRankingLoading.value = true;
+  rankingError.value = '';
+  showCurveChart.value = false;
+
+  try {
+    const response = await fetch('/api/ranking/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        offset: rankingConfig.offset,
+        limit: rankingConfig.limit
+      })
+    });
+
+    if (!response.ok) throw new Error('쿼리 실행 중 에러가 발생했습니다.');
+    const data = await response.json();
+    rankingResult.value = data;
+  } catch (err) {
+    rankingError.value = `조회 실패: ${err.message}`;
+  } finally {
+    isRankingLoading.value = false;
+  }
+};
+
+const runRankingCurve = async () => {
+  isRankingLoading.value = true;
+  isCurveLoading.value = true;
+  rankingError.value = '';
+  showCurveChart.value = true;
+
+  try {
+    const response = await fetch('/api/ranking/curve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        limit: rankingConfig.limit
+      })
+    });
+
+    if (!response.ok) throw new Error('곡선 데이터 연산 도중 에러가 발생했습니다.');
+    const data = await response.json();
+    curvePoints.value = data.points;
+  } catch (err) {
+    rankingError.value = `분석 실패: ${err.message}`;
+  } finally {
+    isRankingLoading.value = false;
+    isCurveLoading.value = false;
+  }
+};
 </script>
 
 <style scoped>
@@ -342,6 +649,48 @@ const calculatedInsights = computed(() => {
 
 .dashboard-header {
   margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 16px;
+}
+
+.nav-tabs {
+  display: flex;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 5px;
+  gap: 4px;
+}
+
+.nav-tab-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-tab-btn:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.nav-tab-btn.active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.25) 0%, rgba(99, 102, 241, 0.1) 100%);
+  color: #a5b4fc;
+  box-shadow: inset 0 0 1px 1px rgba(99, 102, 241, 0.3);
 }
 
 .badge {
@@ -465,10 +814,33 @@ const calculatedInsights = computed(() => {
   font-size: 0.75rem;
 }
 
+.num-input {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  outline: none;
+  width: 100%;
+  text-align: right;
+  font-family: 'Outfit', monospace;
+}
+
+.num-input:focus {
+  border-color: #3b82f6;
+}
+
 .warning-text {
   color: #f59e0b;
   font-size: 0.78rem;
   margin: 4px 0 0 0;
+}
+
+.button-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
 }
 
 /* Checkbox group styling */
@@ -548,7 +920,6 @@ const calculatedInsights = computed(() => {
 
 /* Primary Button */
 .btn-primary {
-  width: 100%;
   background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
   color: white;
   border: none;
@@ -571,11 +942,63 @@ const calculatedInsights = computed(() => {
   background: linear-gradient(135deg, #60a5fa 0%, #2563eb 100%);
 }
 
-.btn-primary:active:not(:disabled) {
-  transform: translateY(0);
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
-.btn-primary:disabled {
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+  font-weight: 600;
+  padding: 11px;
+  font-size: 0.88rem;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-accent {
+  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  color: white;
+  border: none;
+  font-weight: 600;
+  padding: 12px 18px;
+  font-size: 0.95rem;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-accent:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+  background: linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%);
+}
+
+.btn-accent:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   box-shadow: none;
@@ -853,5 +1276,180 @@ tr:hover td {
   background: rgba(139, 92, 246, 0.12);
   color: #a78bfa;
   border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+/* ================= TAB 2 RANKING BENCHMARK STYLES ================= */
+.ranking-insights-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ranking-tech-details {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.tech-item {
+  background: rgba(15, 23, 42, 0.4);
+  border-left: 4px solid #fff;
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: #cbd5e1;
+}
+
+.tech-item.mysql {
+  border-left-color: #ef4444;
+}
+
+.tech-item.redis {
+  border-left-color: #10b981;
+}
+
+.tech-item h4 {
+  margin: 0 0 8px 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.tech-item p {
+  margin: 0 0 10px 0;
+}
+
+.tech-latency {
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: rgba(0,0,0,0.2);
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.ms-red { color: #f87171; }
+.ms-green { color: #34d399; }
+
+.performance-gap {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #f8fafc;
+  text-align: center;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  padding: 12px;
+  border-radius: 10px;
+}
+
+.gap-highlight {
+  color: #a5b4fc;
+  font-size: 1.15rem;
+}
+
+.ranking-list-card {
+  margin-top: 8px;
+}
+
+.ranking-list-card .description {
+  color: #94a3b8;
+  font-size: 0.88rem;
+  margin-top: -12px;
+  margin-bottom: 20px;
+}
+
+.ranking-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 768px) {
+  .ranking-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ranking-column {
+  background: rgba(15, 23, 42, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.col-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-top: 0;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.05);
+}
+
+.col-title.red { color: #f87171; }
+.col-title.green { color: #34d399; }
+
+.rank-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.rank-row {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+
+.rank-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.rank-num {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-right: 12px;
+  min-width: 48px;
+  text-align: center;
+}
+
+.red-bg {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.green-bg {
+  background: rgba(16, 185, 129, 0.15);
+  color: #a7f3d0;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.rank-user {
+  color: #cbd5e1;
+  font-weight: 500;
+  flex-grow: 1;
+}
+
+.rank-score {
+  font-family: 'Outfit', monospace;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.no-data {
+  color: #64748b;
+  text-align: center;
+  padding: 32px;
 }
 </style>
